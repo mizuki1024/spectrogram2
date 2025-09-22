@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spectrogram Visualizer - Standalone</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #0a0a0a;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+
+        #container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            color: white;
+            max-width: 300px;
+        }
+
+        #controls h2 {
+            margin: 0 0 15px 0;
+            color: #00ff88;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: inline-block;
+            width: 100px;
+            font-size: 12px;
+        }
+
+        button {
+            background: #00ff88;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 2px;
+            font-weight: bold;
+            color: black;
+        }
+
+        button:hover {
+            background: #00cc6a;
+        }
+
+        button.recording {
+            background: #ff4444;
+            color: white;
+        }
+
+        #spectrum-canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        .vowel-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-top: 10px;
+        }
+
+        .vowel-btn {
+            padding: 5px 8px;
+            font-size: 11px;
+            min-width: 40px;
+        }
+
+        #status {
+            position: absolute;
+            top: 20px;
+            right: 760px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            color: white;
+            min-width: 300px;
+        }
+
+        .formant-info {
+            font-size: 12px;
+            color: #88ff88;
+            margin-top: 5px;
+        }
+
+        #canvas2d {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(45deg, #0a0a0a, #1a1a2e);
+        }
+
+        .debug-info {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: #00ff88;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 11px;
+        }
+
+        #formant-plot {
+            position: absolute;
+            top: 20px;
+            right: 400px;
+            width: 320px;
+            height: 270px;
+            background: rgba(0, 0, 0, 0.8);
+            border: 2px solid #00ff88;
+            border-radius: 5px;
+            z-index: 1000;
+        }
+
+        #formant-plot canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+
+
+        .plot-title {
+            position: absolute;
+            top: 5px;
+            left: 10px;
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+            z-index: 1001;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <canvas id="canvas2d"></canvas>
+
+        <div id="controls">
+            <h2>🎯 Audio Spectrogram</h2>
+
+            <div class="control-group">
+                <button id="recordBtn">🎙️ Start Recording</button>
+                <button id="resetBtn">Reset</button>
+            </div>
+
+            <div class="control-group">
+                <label>Target Vowel:</label>
+                <div class="vowel-buttons">
+                    <button class="vowel-btn" data-vowel="i">い (i)</button>
+                    <button class="vowel-btn" data-vowel="e">え (e)</button>
+                    <button class="vowel-btn" data-vowel="a">あ (a)</button>
+                    <button class="vowel-btn" data-vowel="o">お (o)</button>
+                    <button class="vowel-btn" data-vowel="u">う (u)</button>
+                </div>
+            </div>
+
+        </div>
+
+        <div id="status">
+            <div><strong>Status:</strong> <span id="statusText">Click Start Recording</span></div>
+            <div><strong>Target:</strong> <span id="targetVowel">æ (cat)</span></div>
+            <div class="formant-info">
+                <strong>Audio Level:</strong> <span id="audioLevel">0</span>
+            </div>
+            <div class="formant-info">
+                <strong>Formants:</strong> F1=<span id="f1Value">-</span>Hz, F2=<span id="f2Value">-</span>Hz
+            </div>
+            <div class="formant-info">
+                <strong>Frequency Peak:</strong> <span id="freqPeak">-</span>Hz
+            </div>
+            <div class="formant-info">
+                <strong>Detected:</strong> <span id="detectedVowel">-</span>
+            </div>
+        </div>
+
+        <div class="debug-info" id="debugInfo">
+            Debug: Ready
+        </div>
+
+        <div id="formant-plot">
+            <div class="plot-title">Formant Space</div>
+            <canvas id="formant-canvas" width="200" height="150"></canvas>
+        </div>
+
+    </div>
+
+    <script>
+        // グローバル変数
+        let canvas, ctx;
+        let formantCanvas, formantCtx;
+        let analyser, microphone, audioContext;
+        let animationId;
+        let isRecording = false;
+        let currentVowel = 'i';
+        let spectrogramData = [];
+        let maxSpectrogramHistory = 200;
+        let mediaRecorder;
+        let stream;
+        let ws;
+        let recordingInterval;
+
+        // 日本語母音データ
+        const VOWELS = {
+            'i': {
+                name: 'い',
+                color: '#FF0000',
+                f1: 324.0,
+                f2: 2426.3
+            },
+            'e': {
+                name: 'え',
+                color: '#00FF00',
+                f1: 501.7,
+                f2: 2064.6
+            },
+            'a': {
+                name: 'あ',
+                color: '#0000FF',
+                f1: 633.9,
+                f2: 1087.5
+            },
+            'o': {
+                name: 'お',
+                color: '#FFFF00',
+                f1: 445.1,
+                f2: 854.2
+            },
+            'u': {
+                name: 'う',
+                color: '#FF00FF',
+                f1: 343.8,
+                f2: 1281.0
+            }
+        };
+
+        // HSVからRGB変換（Chrome Music Lab再現）
+        function hsvToRgb(h, s, v) {
+            h = ((h % 360) + 360) % 360; // 0-360に正規化
+            s = Math.max(0, Math.min(1, s));
+            v = Math.max(0, Math.min(1, v));
+
+            const c = v * s;
+            const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+            const m = v - c;
+
+            let r, g, b;
+            if (h < 60) {
+                r = c; g = x; b = 0;
+            } else if (h < 120) {
+                r = x; g = c; b = 0;
+            } else if (h < 180) {
+                r = 0; g = c; b = x;
+            } else if (h < 240) {
+                r = 0; g = x; b = c;
+            } else if (h < 300) {
+                r = x; g = 0; b = c;
+            } else {
+                r = c; g = 0; b = x;
+            }
+
+            return [
+                Math.round((r + m) * 255),
+                Math.round((g + m) * 255),
+                Math.round((b + m) * 255)
+            ];
+        }
+
+        // 初期化
+        function init() {
+            console.log("Initializing...");
+
+            canvas = document.getElementById('canvas2d');
+            ctx = canvas.getContext('2d');
+
+            // フォルマントプロット初期化
+            formantCanvas = document.getElementById('formant-canvas');
+            formantCtx = formantCanvas.getContext('2d');
+
+                // キャンバスサイズを設定
+            resizeCanvas();
+
+            setupEventListeners();
+
+            // テスト描画
+            drawTestPattern();
+            drawFormantPlot();
+
+            console.log("Initialization complete");
+        }
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        function drawTestPattern() {
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // テストパターン描画
+            ctx.fillStyle = '#00ff88';
+            ctx.font = '24px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('Audio Spectrogram Visualizer', canvas.width / 2, canvas.height / 2 - 50);
+
+            ctx.fillStyle = '#888';
+            ctx.font = '16px Arial';
+            ctx.fillText('Click "Start Recording" to begin', canvas.width / 2, canvas.height / 2);
+            ctx.fillText('No external libraries required', canvas.width / 2, canvas.height / 2 + 30);
+        }
+
+        async function startAudioCapture() {
+            try {
+                console.log("Starting audio capture...");
+                document.getElementById('debugInfo').textContent = "Debug: Requesting microphone access...";
+
+                // Web Audio API初期化
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                console.log("AudioContext state:", audioContext.state);
+
+                // マイクアクセス要求
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false,
+                        sampleRate: 44100
+                    }
+                });
+
+                console.log("Microphone access granted");
+                document.getElementById('debugInfo').textContent = "Debug: Microphone access granted";
+
+                microphone = audioContext.createMediaStreamSource(stream);
+
+                // アナライザー作成
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 2048;
+                analyser.smoothingTimeConstant = 0.1;
+
+                microphone.connect(analyser);
+
+                console.log("Audio setup completed");
+                document.getElementById('debugInfo').textContent = "Debug: Audio setup complete";
+
+                return true;
+            } catch (error) {
+                console.error('Audio initialization failed:', error);
+                document.getElementById('statusText').textContent = 'Audio Error: ' + error.message;
+                document.getElementById('debugInfo').textContent = "Debug: Audio error - " + error.message;
+                return false;
+            }
+        }
+
+        function setupEventListeners() {
+            // 録音ボタン
+            document.getElementById('recordBtn').addEventListener('click', toggleRecording);
+
+
+            // 母音選択
+            document.querySelectorAll('.vowel-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    currentVowel = btn.dataset.vowel;
+                    const vowelData = VOWELS[currentVowel];
+                    document.getElementById('targetVowel').textContent =
+                        `${currentVowel} (${vowelData.name})`;
+
+                    // プロット更新
+                    drawFormantPlot();
+
+                    console.log(`Target vowel changed to: ${currentVowel}`);
+                });
+            });
+
+
+            // リセット
+            document.getElementById('resetBtn').addEventListener('click', () => {
+                spectrogramData = [];
+                drawTestPattern();
+            });
+
+            // ウィンドウリサイズ
+            window.addEventListener('resize', resizeCanvas);
+        }
+
+        async function toggleRecording() {
+            const btn = document.getElementById('recordBtn');
+            console.log("Toggle recording, current state:", isRecording);
+
+            if (!isRecording) {
+                // 録音開始
+                document.getElementById('statusText').textContent = 'Initializing...';
+
+                const success = await startAudioCapture();
+                if (!success) {
+                    return;
+                }
+
+                // WebSocketサーバーに接続
+                const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsHost = window.location.hostname === 'localhost' ? 'localhost:8765' : `${window.location.hostname}:8765`;
+                ws = new WebSocket(`${wsProtocol}//${wsHost}`);
+                ws.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    if (data.error) {
+                        console.error('Server error:', data.error);
+                        return;
+                    }
+                    // フォルマントデータを更新
+                    currentF1 = data.f1;
+                    currentF2 = data.f2;
+                    document.getElementById('f1Value').textContent = Math.round(data.f1);
+                    document.getElementById('f2Value').textContent = Math.round(data.f2);
+                    drawFormantPlot();
+                };
+
+                // メディアレコーダーを設定
+                let audioChunks = [];
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                mediaRecorder.ondataavailable = function(e) {
+                    if (e.data.size > 0) {
+                        audioChunks.push(e.data);
+                    }
+                };
+                mediaRecorder.onstop = async function() {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    audioChunks = []; // Reset for next recording
+                    const reader = new FileReader();
+                    reader.onloadend = function() {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({ audio: reader.result }));
+                        }
+                    };
+                    reader.readAsDataURL(audioBlob);
+                };
+
+                isRecording = true;
+                btn.textContent = '⏹️ Stop Recording';
+                btn.classList.add('recording');
+                document.getElementById('statusText').textContent = 'Recording...';
+
+                // AudioContextを再開
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume();
+                }
+
+                // 録音開始
+                mediaRecorder.start();
+                // 1秒ごとにデータを送信
+                recordingInterval = setInterval(() => {
+                    mediaRecorder.stop();
+                    mediaRecorder.start();
+                }, 1000);
+
+                // アニメーション開始
+                animate();
+
+            } else {
+                // 録音停止
+                isRecording = false;
+                btn.textContent = '🎙️ Start Recording';
+                btn.classList.remove('recording');
+                document.getElementById('statusText').textContent = 'Stopped';
+
+                // インターバルをクリア
+                if (recordingInterval) {
+                    clearInterval(recordingInterval);
+                }
+
+                // メディアレコーダーを停止
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                    mediaRecorder.stop();
+                }
+
+                // WebSocket接続を閉じる
+                if (ws) {
+                    ws.close();
+                }
+
+                // アニメーション停止
+                if (animationId) {
+                    cancelAnimationFrame(animationId);
+                }
+
+                // ストリーム停止
+                if (microphone && microphone.mediaStream) {
+                    microphone.mediaStream.getTracks().forEach(track => track.stop());
+                }
+            }
+        }
+
+
+        function animate() {
+            if (!isRecording) return;
+
+            animationId = requestAnimationFrame(animate);
+
+            updateSpectrogram();
+            drawSpectrogram();
+        }
+
+        function updateSpectrogram() {
+            if (!analyser) return;
+
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            analyser.getByteFrequencyData(dataArray);
+
+            // 音声レベル計算
+            let sum = 0;
+            let maxVal = 0;
+            let maxIndex = 0;
+
+            for (let i = 0; i < bufferLength; i++) {
+                sum += dataArray[i];
+                if (dataArray[i] > maxVal) {
+                    maxVal = dataArray[i];
+                    maxIndex = i;
+                }
+            }
+
+            const avgLevel = Math.round(sum / bufferLength);
+            const peakFreq = Math.round((maxIndex / bufferLength) * (audioContext.sampleRate / 2));
+
+            // UI更新
+            document.getElementById('audioLevel').textContent = avgLevel;
+            document.getElementById('freqPeak').textContent = peakFreq;
+            document.getElementById('debugInfo').textContent =
+                `Debug: Level=${avgLevel}, Peak=${peakFreq}Hz, Max=${maxVal}`;
+
+            // スペクトログラムデータに追加
+            spectrogramData.push(Array.from(dataArray));
+
+            // 履歴制限
+            if (spectrogramData.length > maxSpectrogramHistory) {
+                spectrogramData.shift();
+            }
+
+            // 簡易母音分類
+            classifyVowel(dataArray);
+        }
+
+        function drawSpectrogram() {
+            if (spectrogramData.length === 0) return;
+
+            const width = canvas.width;
+            const height = canvas.height;
+
+            // 背景クリア
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fillRect(0, 0, width, height);
+
+            const timeSlices = spectrogramData.length;
+            const freqBins = spectrogramData[0].length;
+
+            const sliceWidth = width / timeSlices;
+            const binHeight = height / freqBins;
+
+            // スペクトログラム描画
+            for (let t = 0; t < timeSlices; t++) {
+                const x = t * sliceWidth;
+
+                for (let f = 0; f < freqBins; f++) {
+                    const y = height - (f + 1) * binHeight; // 周波数を反転
+                    const amplitude = spectrogramData[t][f];
+
+                    if (amplitude > 10) { // ノイズフィルタ
+                        // Chrome Music Lab風カラーマッピング
+                        const normalizedAmp = amplitude / 255.0;
+                        const hue = 360 - (normalizedAmp * 360); // 360度から0度へ
+                        const [r, g, b] = hsvToRgb(hue, 1.0, normalizedAmp);
+
+                        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                        ctx.fillRect(x, y, sliceWidth + 1, binHeight + 1);
+                    }
+                }
+            }
+
+            // フォルマント線を描画
+            if (currentF1 > 0 && currentF2 > 0) {
+                const maxFreq = 4000; // 表示する最大周波数
+
+                // F1線 (赤)
+                const f1Y = height - (currentF1 / maxFreq) * height;
+                if (f1Y > 0 && f1Y < height) {
+                    ctx.strokeStyle = '#ff4444';
+                    ctx.lineWidth = 3;
+                    ctx.setLineDash([5, 5]);
+                    ctx.beginPath();
+                    ctx.moveTo(0, f1Y);
+                    ctx.lineTo(width, f1Y);
+                    ctx.stroke();
+
+                    // F1ラベル
+                    ctx.fillStyle = '#ff4444';
+                    ctx.font = 'bold 14px Arial';
+                    ctx.fillText(`F1: ${Math.round(currentF1)}Hz`, width - 120, f1Y - 5);
+                }
+
+                // F2線 (黄)
+                const f2Y = height - (currentF2 / maxFreq) * height;
+                if (f2Y > 0 && f2Y < height) {
+                    ctx.strokeStyle = '#ffff44';
+                    ctx.lineWidth = 3;
+                    ctx.setLineDash([5, 5]);
+                    ctx.beginPath();
+                    ctx.moveTo(0, f2Y);
+                    ctx.lineTo(width, f2Y);
+                    ctx.stroke();
+
+                    // F2ラベル
+                    ctx.fillStyle = '#ffff44';
+                    ctx.font = 'bold 14px Arial';
+                    ctx.fillText(`F2: ${Math.round(currentF2)}Hz`, width - 120, f2Y - 5);
+                }
+
+                // 線スタイルをリセット
+                ctx.setLineDash([]);
+            }
+
+            // 母音マーカー（理想的なフォルマント位置）
+            const targetVowel = VOWELS[currentVowel];
+            if (targetVowel) {
+                const maxFreq = 4000;
+                const targetF1Y = height - (targetVowel.f1 / maxFreq) * height;
+                const targetF2Y = height - (targetVowel.f2 / maxFreq) * height;
+
+                if (targetF1Y > 0 && targetF1Y < height) {
+                    ctx.strokeStyle = '#00ff88';
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([2, 8]);
+                    ctx.beginPath();
+                    ctx.moveTo(0, targetF1Y);
+                    ctx.lineTo(width, targetF1Y);
+                    ctx.stroke();
+
+                    ctx.fillStyle = '#00ff88';
+                    ctx.font = '12px Arial';
+                    ctx.fillText(`Target F1: ${targetVowel.f1}Hz`, 10, targetF1Y - 5);
+                }
+
+                if (targetF2Y > 0 && targetF2Y < height) {
+                    ctx.strokeStyle = '#00ff88';
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([2, 8]);
+                    ctx.beginPath();
+                    ctx.moveTo(0, targetF2Y);
+                    ctx.lineTo(width, targetF2Y);
+                    ctx.stroke();
+
+                    ctx.fillStyle = '#00ff88';
+                    ctx.font = '12px Arial';
+                    ctx.fillText(`Target F2: ${targetVowel.f2}Hz`, 10, targetF2Y - 5);
+                }
+
+                ctx.setLineDash([]);
+            }
+
+            // フレーム情報表示
+            ctx.fillStyle = '#00ff88';
+            ctx.font = '12px monospace';
+            ctx.fillText(`Frames: ${timeSlices}, Freq bins: ${freqBins}`, 10, height - 10);
+        }
+
+        // グローバル変数にフォルマント値を追加
+        let currentF1 = 0, currentF2 = 0;
+
+
+
+        function extractFormants(dataArray) {
+            // より高精度なフォルマント推定
+            const sampleRate = audioContext.sampleRate;
+            const binSize = sampleRate / (2 * dataArray.length);
+
+            // スムージング処理
+            const smoothedData = new Float32Array(dataArray.length);
+            for (let i = 1; i < dataArray.length - 1; i++) {
+                smoothedData[i] = (dataArray[i-1] + dataArray[i] * 2 + dataArray[i+1]) / 4;
+            }
+
+            // ピーク検出関数
+            function findPeaks(data, minAmplitude = 20) {
+                const peaks = [];
+                for (let i = 1; i < data.length - 1; i++) {
+                    if (data[i] > data[i-1] && data[i] > data[i+1] && data[i] > minAmplitude) {
+                        peaks.push({
+                            index: i,
+                            frequency: i * binSize,
+                            amplitude: data[i]
+                        });
+                    }
+                }
+                return peaks.sort((a, b) => b.amplitude - a.amplitude);
+            }
+
+            const peaks = findPeaks(smoothedData);
+
+            // F1候補 (200-1000Hz)
+            const f1Candidates = peaks.filter(p =>
+                p.frequency >= 200 && p.frequency <= 1000
+            );
+
+            // F2候補 (800-3000Hz) - F1より高い周波数
+            const f2Candidates = peaks.filter(p =>
+                p.frequency >= 800 && p.frequency <= 3000
+            );
+
+            // 最も強いピークを選択
+            let f1 = f1Candidates.length > 0 ? f1Candidates[0].frequency : 0;
+            let f2 = f2Candidates.find(p => p.frequency > f1)?.frequency || 0;
+
+            // 無音検出 (閾値を大きく設定して、明確な発声音のみを検出)
+            const averageAmplitude = smoothedData.reduce((sum, val) => sum + val, 0) / smoothedData.length;
+            const maxAmplitude = Math.max(...smoothedData);
+            
+            // より厳密な無音判定（平均音量と最大音量の両方をチェック）
+            if (averageAmplitude < 4 || maxAmplitude < 120) { // 無音閾値を上げる
+                return { f1: 0, f2: 0 };
+            }
+
+            // フォルマント追跡（急激な変化を抑制）
+            const smoothingFactor = 0.7;
+            if (f1 > 0) {
+                currentF1 = currentF1 === 0 ? f1 : currentF1 * smoothingFactor + f1 * (1 - smoothingFactor);
+            }
+            if (f2 > 0) {
+                currentF2 = currentF2 === 0 ? f2 : currentF2 * smoothingFactor + f2 * (1 - smoothingFactor);
+            }
+
+            // フォルマント値を四捨五入
+            return { 
+                f1: Math.round(currentF1), 
+                f2: Math.round(currentF2)
+            };
+        }
+
+        const F1_THRESHOLD = 100;
+        const F2_THRESHOLD = 200;
+        const THRESHOLD = 150;
+
+        function classifyVowel(dataArray) {
+            // フォルマント推定
+            const formants = extractFormants(dataArray);
+
+            // UI更新
+            document.getElementById('f1Value').textContent = formants.f1 || '-';
+            document.getElementById('f2Value').textContent = formants.f2 || '-';
+
+            // 母音分類
+            if (formants.f1 > 0 && formants.f2 > 0) {
+                let bestMatch = 'ə';
+                let matched = false;
+
+                for (const [vowel, data] of Object.entries(VOWELS)) {
+                    const th_f1 = F1_THRESHOLD;
+                    const th_f2 = F2_THRESHOLD;
+
+                    if (Math.abs(formants.f1 - data.f1) <= th_f1 && 
+                        Math.abs(formants.f2 - data.f2) <= th_f2) {
+                        bestMatch = vowel;
+                        matched = true;
+                        break;
+                    }
+                }
+
+                const isMatch = bestMatch === currentVowel;
+                const confidence = matched ? 100 : 0;
+
+                document.getElementById('detectedVowel').textContent =
+                    `${bestMatch} (${VOWELS[bestMatch].name})${isMatch ? ' ✅' : ''} ${confidence}%`;
+            } else {
+                document.getElementById('detectedVowel').textContent = 'No clear vowel detected';
+            }
+
+            return formants;
+        }
+
+        function drawFormantPlot() {
+            if (!formantCtx) return;
+
+            const width = 200;
+            const height = 200;
+
+            // 背景クリア
+            formantCtx.fillStyle = 'rgba(0, 0, 0, 0.9)';
+            formantCtx.fillRect(0, 0, width, height);
+
+            // F1-F2空間の範囲設定（画像に合わせて調整）
+            const f1Min = 200, f1Max = 800;
+            const f2Min = 500, f2Max = 3000;
+
+            // 座標変換関数（音韻学的慣習に従って修正）
+            function toPlotCoords(f1, f2) {
+                // F2は左右反転（高い値が左側）
+                const x = width - ((f2 - f2Min) / (f2Max - f2Min)) * width;
+                // F1は上下反転（低い値が上側）
+                const y = ((f1 - f1Min) / (f1Max - f1Min)) * height;
+                return { x, y };
+            }
+
+            // 軸の描画
+            formantCtx.strokeStyle = '#444';
+            formantCtx.lineWidth = 1;
+            formantCtx.setLineDash([]);
+
+            // F2軸のグリッド（右から左へ）
+            for (let f2 = 1000; f2 <= 2500; f2 += 500) {
+                const x = width - ((f2 - f2Min) / (f2Max - f2Min)) * width;
+                formantCtx.beginPath();
+                formantCtx.moveTo(x, 0);
+                formantCtx.lineTo(x, height);
+                formantCtx.stroke();
+            }
+
+            // F1軸のグリッド（上から下へ）
+            for (let f1 = 200; f1 <= 700; f1 += 100) {
+                const y = ((f1 - f1Min) / (f1Max - f1Min)) * height;
+                formantCtx.beginPath();
+                formantCtx.moveTo(0, y);
+                formantCtx.lineTo(width, y);
+                formantCtx.stroke();
+            }
+
+            // 軸の数値ラベルを追加
+            formantCtx.fillStyle = 'white';
+            formantCtx.font = '10px Arial';
+            formantCtx.textAlign = 'center';
+
+            // F2軸の数値（上部）
+            for (let f2 = 1000; f2 <= 2500; f2 += 500) {
+                const x = width - ((f2 - f2Min) / (f2Max - f2Min)) * width;
+                formantCtx.fillText(f2.toString(), x, 15);
+            }
+
+            // F1軸の数値（左側）
+            formantCtx.textAlign = 'right';
+            for (let f1 = 200; f1 <= 700; f1 += 100) {
+                const y = ((f1 - f1Min) / (f1Max - f1Min)) * height;
+                formantCtx.fillText(f1.toString(), 25, y + 4);
+            }
+
+            // 理想的な母音位置を描画
+            for (const [vowel, data] of Object.entries(VOWELS)) {
+                const coords = toPlotCoords(data.f1, data.f2);
+                if (coords.x >= 0 && coords.x <= width && coords.y >= 0 && coords.y <= height) {
+                    // 母音円
+                    formantCtx.fillStyle = vowel === currentVowel ? '#00ff88' : data.color;
+                    formantCtx.beginPath();
+                    formantCtx.arc(coords.x, coords.y, vowel === currentVowel ? 8 : 4, 0, Math.PI * 2);
+                    formantCtx.fill();
+
+                    // 母音ラベル
+                    formantCtx.fillStyle = 'white';
+                    formantCtx.font = '10px Arial';
+                    formantCtx.textAlign = 'center';
+                    formantCtx.fillText(data.name, coords.x, coords.y - 10);
+                }
+            }
+
+            // 現在の発話位置を描画
+            if (currentF1 > 0 && currentF2 > 0) {
+                const coords = toPlotCoords(currentF1, currentF2);
+                if (coords.x >= 0 && coords.x <= width && coords.y >= 0 && coords.y <= height) {
+                    // 現在位置マーカー
+                    formantCtx.fillStyle = '#ff4444';
+                    formantCtx.beginPath();
+                    formantCtx.arc(coords.x, coords.y, 6, 0, Math.PI * 2);
+                    formantCtx.fill();
+
+                    // 輪郭
+                    formantCtx.strokeStyle = 'white';
+                    formantCtx.lineWidth = 2;
+                    formantCtx.beginPath();
+                    formantCtx.arc(coords.x, coords.y, 6, 0, Math.PI * 2);
+                    formantCtx.stroke();
+                }
+            }
+
+            // 軸ラベル
+            formantCtx.fillStyle = 'white';
+            formantCtx.font = '12px Arial';
+            formantCtx.textAlign = 'center';
+            formantCtx.fillText('F2 (Hz)', width / 2, height - 5);
+
+            formantCtx.save();
+            formantCtx.translate(10, height / 2);
+            formantCtx.rotate(-Math.PI / 2);
+            formantCtx.fillText('F1 (Hz)', 0, 0);
+            formantCtx.restore();
+        }
+        // updateSpectrogram関数を修正してフォルマントプロットも更新
+        function updateSpectrogram() {
+            if (!analyser) return;
+
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            analyser.getByteFrequencyData(dataArray);
+
+            // 音声レベル計算
+            let sum = 0;
+            let maxVal = 0;
+            let maxIndex = 0;
+
+            for (let i = 0; i < bufferLength; i++) {
+                sum += dataArray[i];
+                if (dataArray[i] > maxVal) {
+                    maxVal = dataArray[i];
+                    maxIndex = i;
+                }
+            }
+
+            const avgLevel = Math.round(sum / bufferLength);
+            const peakFreq = Math.round((maxIndex / bufferLength) * (audioContext.sampleRate / 2));
+
+            // UI更新
+            document.getElementById('audioLevel').textContent = avgLevel;
+            document.getElementById('freqPeak').textContent = peakFreq;
+            document.getElementById('debugInfo').textContent =
+                `Debug: Level=${avgLevel}, Peak=${peakFreq}Hz, Max=${maxVal}`;
+
+            // スペクトログラムデータに追加
+            spectrogramData.push(Array.from(dataArray));
+
+            // 履歴制限
+            if (spectrogramData.length > maxSpectrogramHistory) {
+                spectrogramData.shift();
+            }
+
+            // 簡易母音分類とフォルマントプロット更新
+            classifyVowel(dataArray);
+            drawFormantPlot();
+        }
+
+        // 初期化実行
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
