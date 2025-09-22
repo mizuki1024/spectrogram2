@@ -17,34 +17,6 @@ import wave
 import logging
 import asyncio
 import websockets
-async def handle_websocket(websocket, path):
-    try:
-        async for message in websocket:
-            try:
-                data = json.loads(message)
-                if 'audio' in data:
-                    # base64文字列をバイナリデータに変換
-                    audio_base64 = data['audio']
-                    if audio_base64.startswith('data:'):
-                        audio_base64 = audio_base64.split(',')[1]
-                    audio_blob = base64.b64decode(audio_base64)
-                    result = analyze_audio_blob(audio_blob)
-                    await websocket.send(json.dumps(result))
-                else:
-                    await websocket.send(json.dumps({'error': 'No audio data received'}))
-            except Exception as e:
-                await websocket.send(json.dumps({'error': str(e)}))
-    except (websockets.exceptions.ConnectionClosed, websockets.exceptions.InvalidMessage):
-        pass
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-
-async def main():
-    host = '0.0.0.0'
-    port = int(os.environ.get('WS_PORT', 8765))
-    async with websockets.serve(handle_websocket, host, port) as server:
-        print(f"Formant analysis server running on ws://{host}:{port}")
-        await asyncio.Future()  # run forever
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -337,18 +309,36 @@ def api_info():
 # === WebSocket Server for Audio Analysis === #
 
 def analyze_audio_blob(audio_blob):
-    # Save base64 audio data as a temporary file
-    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
-        temp_wav.write(audio_blob)
-        temp_path = temp_wav.name
-
+    """Analyze audio blob using Praat for formant extraction"""
+    temp_path = None
+    
     try:
+        # Validate audio blob
+        if not audio_blob or len(audio_blob) == 0:
+            return {'error': 'Empty audio data received'}
+        
+        # Save base64 audio data as a temporary file
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
+            temp_wav.write(audio_blob)
+            temp_path = temp_wav.name
+
+        logger.info(f"Analyzing audio file: {temp_path} ({len(audio_blob)} bytes)")
+
         # Analyze audio with Praat
         sound = parselmouth.Sound(temp_path)
+        
+        # Validate sound object
+        if sound.duration < 0.01:  # Minimum 10ms
+            return {'error': 'Audio too short for analysis'}
+            
         formant = sound.to_formant_burg(time_step=TIME_STEP, maximum_formant=MAX_FORMANT)
         duration = sound.duration
         max_flat_samples = sound.values.flatten()
         max_amplitude = np.max(np.abs(max_flat_samples))
+        
+        if max_amplitude == 0:
+            return {'error': 'No audio signal detected'}
+            
         times = np.arange(0, duration, TIME_STEP)
         f1_all, f2_all = [], []
 
@@ -372,7 +362,7 @@ def analyze_audio_blob(audio_blob):
                         f1_all.append(float(f1))
                         f2_all.append(float(f2))
             except Exception as e:
-                print(f"Error analyzing segment at time {t}: {e}")
+                logger.warning(f"Error analyzing segment at time {t}: {e}")
                 continue
 
         if f1_all and f2_all:
@@ -382,43 +372,75 @@ def analyze_audio_blob(audio_blob):
             # Z-score outlier removal
             f1_mean, f1_std = np.mean(f1_vals), np.std(f1_vals)
             f2_mean, f2_std = np.mean(f2_vals), np.std(f2_vals)
-            valid_idx = (np.abs((f1_vals - f1_mean)/f1_std) <= Z_SCORE) & \
-                        (np.abs((f2_vals - f2_mean)/f2_std) <= Z_SCORE)
+            
+            if f1_std > 0 and f2_std > 0:
+                valid_idx = (np.abs((f1_vals - f1_mean)/f1_std) <= Z_SCORE) & \
+                            (np.abs((f2_vals - f2_mean)/f2_std) <= Z_SCORE)
+                f1_vals = f1_vals[valid_idx]
+                f2_vals = f2_vals[valid_idx]
 
-            f1_vals = f1_vals[valid_idx]
-            f2_vals = f2_vals[valid_idx]
+            if len(f1_vals) > 0 and len(f2_vals) > 0:
+                result = {
+                    'f1': float(np.median(f1_vals)),
+                    'f2': float(np.median(f2_vals)),
+                    'f1_all': f1_all,
+                    'f2_all': f2_all,
+                    'samples_analyzed': len(f1_vals),
+                    'duration': duration
+                }
+                logger.info(f"Analysis successful: F1={result['f1']}, F2={result['f2']}")
+                return result
+            else:
+                return {'error': 'No valid formants after filtering'}
 
-            return {
-                'f1': float(np.median(f1_vals)),
-                'f2': float(np.median(f2_vals)),
-                'f1_all': f1_all,
-                'f2_all': f2_all
-            }
         else:
-            return {'error': 'No formants detected'}
+            return {'error': 'No formants detected in audio'}
 
+    except parselmouth.PraatError as e:
+        logger.error(f"Praat analysis error: {e}")
+        return {'error': f'Praat analysis failed: {str(e)}'}
     except Exception as e:
-        return {'error': str(e)}
+        logger.error(f"Audio analysis error: {e}")
+        return {'error': f'Audio analysis failed: {str(e)}'}
     finally:
         # Delete temporary file
-        try:
-            os.unlink(temp_path)
-        except:
-            pass
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+                logger.debug(f"Cleaned up temporary file: {temp_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary file {temp_path}: {e}")
 
 async def handle_websocket(websocket, path):
-    async for message in websocket:
-        try:
-            data = json.loads(message)
-            if 'audio' in data:
-                # Convert base64 string to binary data
-                audio_blob = base64.b64decode(data['audio'].split(',')[1])
-                result = analyze_audio_blob(audio_blob)
-                await websocket.send(json.dumps(result))
-            else:
-                await websocket.send(json.dumps({'error': 'No audio data received'}))
-        except Exception as e:
-            await websocket.send(json.dumps({'error': str(e)}))
+    """WebSocket connection handler for audio analysis"""
+    logger.info(f"New WebSocket connection from {websocket.remote_address}")
+    try:
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+                if 'audio' in data:
+                    # Convert base64 string to binary data
+                    audio_base64 = data['audio']
+                    if audio_base64.startswith('data:'):
+                        audio_base64 = audio_base64.split(',')[1]
+                    audio_blob = base64.b64decode(audio_base64)
+                    result = analyze_audio_blob(audio_blob)
+                    await websocket.send(json.dumps(result))
+                else:
+                    await websocket.send(json.dumps({'error': 'No audio data received'}))
+            except json.JSONDecodeError as e:
+                await websocket.send(json.dumps({'error': f'Invalid JSON: {str(e)}'}))
+            except Exception as e:
+                logger.error(f"Error processing message: {e}")
+                await websocket.send(json.dumps({'error': str(e)}))
+    except websockets.exceptions.ConnectionClosed:
+        logger.info(f"WebSocket connection closed: {websocket.remote_address}")
+    except websockets.exceptions.InvalidMessage as e:
+        logger.warning(f"Invalid WebSocket message: {e}")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        logger.info(f"WebSocket connection ended: {websocket.remote_address}")
 
 async def websocket_main():
     host = '0.0.0.0'
@@ -427,23 +449,50 @@ async def websocket_main():
 
     # Handle HTTP requests (health checks) on WebSocket port
     async def process_request(path, request_headers):
+        """Process incoming HTTP requests and handle health checks"""
+        import http
+        
+        # Check if this is a proper WebSocket upgrade request
+        has_upgrade = False
+        has_connection = False
         method = None
+
         for name, value in request_headers:
-            if name.lower() == 'method':
-                method = value
+            name_lower = name.lower()
+            value_lower = value.lower()
+
+            if name_lower == 'upgrade' and 'websocket' in value_lower:
+                has_upgrade = True
+            elif name_lower == 'connection' and 'upgrade' in value_lower:
+                has_connection = True
+
+        # Extract HTTP method from headers (Render sends this in custom header)
+        for name, value in request_headers:
+            if name.lower() == ':method':
+                method = value.upper()
                 break
 
-        # Check if this is a HEAD or GET request (health check)
-        if any(name.lower() == 'upgrade' and value.lower() == 'websocket' for name, value in request_headers):
-            # This is a proper WebSocket request, continue normally
+        # If it's a proper WebSocket request, continue with WebSocket handshake
+        if has_upgrade and has_connection:
+            logger.info(f"WebSocket upgrade request from {path}")
             return None
-        else:
-            # This is likely a health check, return a simple HTTP response
-            return (
-                http.HTTPStatus.OK,
-                [("Content-Type", "text/plain")],
-                b"WebSocket server is running\n"
-            )
+
+        # Handle health check requests (GET, HEAD, or any non-WebSocket request)
+        logger.info(f"Health check request: {method or 'Unknown'} {path}")
+        
+        # Return appropriate HTTP response for health checks
+        response_body = b"WebSocket server is running\n"
+        content_length = str(len(response_body))
+        
+        return (
+            http.HTTPStatus.OK,
+            [
+                ("Content-Type", "text/plain"),
+                ("Content-Length", content_length),
+                ("Cache-Control", "no-cache")
+            ],
+            response_body
+        )
 
     try:
         import http
@@ -454,9 +503,15 @@ async def websocket_main():
             process_request=process_request,
             # Add ping/pong to keep connections alive
             ping_interval=20,
-            ping_timeout=10
+            ping_timeout=10,
+            # Additional settings for better compatibility
+            max_size=10*1024*1024,  # 10MB max message size
+            max_queue=32,
+            read_limit=10*1024*1024,  # 10MB read limit
+            write_limit=10*1024*1024   # 10MB write limit
         )
-        print(f"Formant analysis server running on ws://{host}:{port}")
+        logger.info(f"Formant analysis WebSocket server running on ws://{host}:{port}")
+        logger.info("Server is ready to accept connections")
         await server.wait_closed()
     except Exception as e:
         logger.error(f"WebSocket server error: {e}")
