@@ -416,10 +416,11 @@
                 }
 
                 // REST APIを使用してフォルマント分析
-                // メディアレコーダーを設定
+                // メディアレコーダーを設定（より軽量な設定）
                 let audioChunks = [];
                 mediaRecorder = new MediaRecorder(stream, {
-                    mimeType: 'audio/webm;codecs=opus'
+                    mimeType: 'audio/webm;codecs=opus',
+                    audioBitsPerSecond: 32000  // 低ビットレートで軽量化
                 });
                 mediaRecorder.ondataavailable = function(e) {
                     if (e.data.size > 0) {
@@ -429,6 +430,13 @@
                 mediaRecorder.onstop = async function() {
                     const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
                     audioChunks = []; // Reset for next recording
+
+                    // 音声レベルが低い場合はAPI呼び出しをスキップ
+                    const currentLevel = parseInt(document.getElementById('audioLevel').textContent) || 0;
+                    if (currentLevel < 10) {
+                        console.log('Audio level too low, skipping API call');
+                        return;
+                    }
 
                     // Convert to WAV and send to REST API
                     try {
@@ -471,11 +479,11 @@
 
                 // 録音開始
                 mediaRecorder.start();
-                // リアルタイム分析のため、API呼び出し間隔を延長（3秒ごと）
+                // ラグ軽減のため、API呼び出し間隔をさらに延長（5秒ごと）
                 recordingInterval = setInterval(() => {
                     mediaRecorder.stop();
                     mediaRecorder.start();
-                }, 3000);
+                }, 5000);
 
                 // アニメーション開始
                 animate();
@@ -519,6 +527,9 @@
 
             updateSpectrogram();
             drawSpectrogram();
+            
+            // より頻繁にフォルマントプロットを更新
+            drawFormantPlot();
         }
 
         function updateSpectrogram() {

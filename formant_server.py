@@ -30,7 +30,7 @@ SAMPLE_RATE = 44100
 MAX_FORMANT = 5000.0
 MIN_AMPLITUDE = 0.005  # より敏感に設定
 MIN_AMP_FILE = 0.005   # より敏感に設定
-TIME_STEP = 0.03      # Analysis time step (seconds)
+TIME_STEP = 0.05      # Analysis time step (seconds) - より高速に
 Z_SCORE = 0.674        # Z-score threshold for outlier removal
 
 # English vowel targets for classification
