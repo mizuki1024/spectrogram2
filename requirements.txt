@@ -1,0 +1,6 @@
+flask>=2.0.0
+flask-cors>=3.0.0
+praat-parselmouth>=0.4.0
+numpy>=1.21.0
+librosa>=0.8.0
+websockets>=11.0
