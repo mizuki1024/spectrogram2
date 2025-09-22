@@ -24,15 +24,20 @@ async def handle_websocket(websocket, path):
                 data = json.loads(message)
                 if 'audio' in data:
                     # base64文字列をバイナリデータに変換
-                    audio_blob = base64.b64decode(data['audio'].split(',')[1])
+                    audio_base64 = data['audio']
+                    if audio_base64.startswith('data:'):
+                        audio_base64 = audio_base64.split(',')[1]
+                    audio_blob = base64.b64decode(audio_base64)
                     result = analyze_audio_blob(audio_blob)
                     await websocket.send(json.dumps(result))
                 else:
                     await websocket.send(json.dumps({'error': 'No audio data received'}))
             except Exception as e:
                 await websocket.send(json.dumps({'error': str(e)}))
-    except websockets.exceptions.ConnectionClosed:
+    except (websockets.exceptions.ConnectionClosed, websockets.exceptions.InvalidMessage):
         pass
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
 
 async def main():
     host = '0.0.0.0'
@@ -261,6 +266,9 @@ def extract_formants():
 
         # Decode base64 audio data
         audio_base64 = data['audio']
+        if audio_base64.startswith('data:'):
+            # Remove data URL prefix if present
+            audio_base64 = audio_base64.split(',')[1]
         audio_bytes = base64.b64decode(audio_base64)
 
         # Parse WAV data
@@ -416,9 +424,43 @@ async def websocket_main():
     host = '0.0.0.0'
     # RenderではPORTを同じにして、パスで区別する
     port = int(os.environ.get('WS_PORT', 8765))
-    server = await websockets.serve(handle_websocket, host, port)
-    print(f"Formant analysis server running on ws://{host}:{port}")
-    await server.wait_closed()
+
+    # Handle HTTP requests (health checks) on WebSocket port
+    async def process_request(path, request_headers):
+        method = None
+        for name, value in request_headers:
+            if name.lower() == 'method':
+                method = value
+                break
+
+        # Check if this is a HEAD or GET request (health check)
+        if any(name.lower() == 'upgrade' and value.lower() == 'websocket' for name, value in request_headers):
+            # This is a proper WebSocket request, continue normally
+            return None
+        else:
+            # This is likely a health check, return a simple HTTP response
+            return (
+                http.HTTPStatus.OK,
+                [("Content-Type", "text/plain")],
+                b"WebSocket server is running\n"
+            )
+
+    try:
+        import http
+        server = await websockets.serve(
+            handle_websocket,
+            host,
+            port,
+            process_request=process_request,
+            # Add ping/pong to keep connections alive
+            ping_interval=20,
+            ping_timeout=10
+        )
+        print(f"Formant analysis server running on ws://{host}:{port}")
+        await server.wait_closed()
+    except Exception as e:
+        logger.error(f"WebSocket server error: {e}")
+        raise
 
 if __name__ == '__main__':
     # Check if required packages are available
