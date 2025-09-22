@@ -241,21 +241,51 @@ def extract_formants():
         if audio_base64.startswith('data:'):
             # Remove data URL prefix if present
             audio_base64 = audio_base64.split(',')[1]
-        audio_bytes = base64.b64decode(audio_base64)
+        
+        try:
+            audio_bytes = base64.b64decode(audio_base64)
+        except Exception as decode_error:
+            logger.error(f"Base64 decode error: {decode_error}")
+            return jsonify({
+                'error': 'Invalid base64 audio data',
+                'success': False
+            }), 400
+            
+        if len(audio_bytes) == 0:
+            return jsonify({
+                'error': 'Empty audio data',
+                'success': False
+            }), 400
 
-        # Parse WAV data
-        with io.BytesIO(audio_bytes) as audio_io:
-            with wave.open(audio_io, 'rb') as wav_file:
-                sample_rate = wav_file.getframerate()
-                frames = wav_file.readframes(wav_file.getnframes())
+        # Parse audio data (handle both WAV and WebM formats)
+        try:
+            with io.BytesIO(audio_bytes) as audio_io:
+                # Try WAV first
+                try:
+                    with wave.open(audio_io, 'rb') as wav_file:
+                        sample_rate = wav_file.getframerate()
+                        frames = wav_file.readframes(wav_file.getnframes())
 
-                # Convert to numpy array
-                if wav_file.getsampwidth() == 2:  # 16-bit
-                    audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-                elif wav_file.getsampwidth() == 4:  # 32-bit
-                    audio_data = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
-                else:  # 8-bit or other
-                    audio_data = np.frombuffer(frames, dtype=np.uint8).astype(np.float32) / 128.0 - 1.0
+                        # Convert to numpy array
+                        if wav_file.getsampwidth() == 2:  # 16-bit
+                            audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+                        elif wav_file.getsampwidth() == 4:  # 32-bit
+                            audio_data = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+                        else:  # 8-bit or other
+                            audio_data = np.frombuffer(frames, dtype=np.uint8).astype(np.float32) / 128.0 - 1.0
+                except wave.Error:
+                    # If WAV parsing fails, try to use librosa for WebM/other formats
+                    logger.info("WAV parsing failed, trying librosa for audio format")
+                    import librosa
+                    audio_io.seek(0)
+                    audio_data, sample_rate = librosa.load(audio_io, sr=None)
+                    
+        except Exception as audio_error:
+            logger.error(f"Audio parsing error: {audio_error}")
+            return jsonify({
+                'error': f'Audio format not supported: {str(audio_error)}',
+                'success': False
+            }), 400
 
         # Extract formants using Praat
         result = extract_formants_praat(audio_data, sample_rate)
@@ -269,6 +299,7 @@ def extract_formants():
         return jsonify(result)
 
     except Exception as e:
+        logger.error(f"Extract formants error: {e}", exc_info=True)
         return jsonify({
             'error': f'Server error: {str(e)}',
             'success': False
@@ -506,9 +537,7 @@ async def websocket_main():
             ping_timeout=10,
             # Additional settings for better compatibility
             max_size=10*1024*1024,  # 10MB max message size
-            max_queue=32,
-            read_limit=10*1024*1024,  # 10MB read limit
-            write_limit=10*1024*1024   # 10MB write limit
+            max_queue=32
         )
         logger.info(f"Formant analysis WebSocket server running on ws://{host}:{port}")
         logger.info("Server is ready to accept connections")
