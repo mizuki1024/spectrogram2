@@ -28,8 +28,8 @@ CORS(app)
 # Constants
 SAMPLE_RATE = 44100
 MAX_FORMANT = 5000.0
-MIN_AMPLITUDE = 0.01
-MIN_AMP_FILE = 0.01
+MIN_AMPLITUDE = 0.005  # より敏感に設定
+MIN_AMP_FILE = 0.005   # より敏感に設定
 TIME_STEP = 0.03      # Analysis time step (seconds)
 Z_SCORE = 0.674        # Z-score threshold for outlier removal
 
@@ -61,7 +61,7 @@ def classify_vowel(f1, f2):
 
     best_match = None
     min_distance = float('inf')
-    threshold = 150  # Hz threshold for classification
+    threshold = 250  # Hz threshold for classification (より寛容に設定)
 
     for vowel, data in ENGLISH_VOWELS.items():
         # Calculate Euclidean distance in formant space

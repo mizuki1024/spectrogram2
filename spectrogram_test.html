@@ -471,11 +471,11 @@
 
                 // 録音開始
                 mediaRecorder.start();
-                // 1秒ごとにデータを送信
+                // リアルタイム分析のため、API呼び出し間隔を延長（3秒ごと）
                 recordingInterval = setInterval(() => {
                     mediaRecorder.stop();
                     mediaRecorder.start();
-                }, 1000);
+                }, 3000);
 
                 // アニメーション開始
                 animate();
@@ -700,8 +700,8 @@
                 smoothedData[i] = (dataArray[i-1] + dataArray[i] * 2 + dataArray[i+1]) / 4;
             }
 
-            // ピーク検出関数
-            function findPeaks(data, minAmplitude = 20) {
+            // ピーク検出関数（より敏感に設定）
+            function findPeaks(data, minAmplitude = 10) { // 閾値を下げる
                 const peaks = [];
                 for (let i = 1; i < data.length - 1; i++) {
                     if (data[i] > data[i-1] && data[i] > data[i+1] && data[i] > minAmplitude) {
@@ -731,17 +731,17 @@
             let f1 = f1Candidates.length > 0 ? f1Candidates[0].frequency : 0;
             let f2 = f2Candidates.find(p => p.frequency > f1)?.frequency || 0;
 
-            // 無音検出 (閾値を大きく設定して、明確な発声音のみを検出)
+            // 無音検出 (閾値を調整して、より敏感に音声を検出)
             const averageAmplitude = smoothedData.reduce((sum, val) => sum + val, 0) / smoothedData.length;
             const maxAmplitude = Math.max(...smoothedData);
             
-            // より厳密な無音判定（平均音量と最大音量の両方をチェック）
-            if (averageAmplitude < 4 || maxAmplitude < 120) { // 無音閾値を上げる
+            // より敏感な無音判定（閾値を下げて音声を検出しやすくする）
+            if (averageAmplitude < 2 || maxAmplitude < 30) { // 無音閾値を下げる
                 return { f1: 0, f2: 0 };
             }
 
-            // フォルマント追跡（急激な変化を抑制）
-            const smoothingFactor = 0.7;
+            // フォルマント追跡（より反応的に設定）
+            const smoothingFactor = 0.5; // より反応的に
             if (f1 > 0) {
                 currentF1 = currentF1 === 0 ? f1 : currentF1 * smoothingFactor + f1 * (1 - smoothingFactor);
             }
@@ -756,9 +756,9 @@
             };
         }
 
-        const F1_THRESHOLD = 100;
-        const F2_THRESHOLD = 200;
-        const THRESHOLD = 150;
+        const F1_THRESHOLD = 150;  // より寛容に設定
+        const F2_THRESHOLD = 300;  // より寛容に設定
+        const THRESHOLD = 200;     // より寛容に設定
 
         function classifyVowel(dataArray) {
             // フォルマント推定
